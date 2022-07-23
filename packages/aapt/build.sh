@@ -5,8 +5,9 @@ TERMUX_PKG_MAINTAINER="@termux"
 _TAG_VERSION=12.0.0
 _TAG_REVISION=27
 TERMUX_PKG_VERSION=${_TAG_VERSION}.${_TAG_REVISION}
-TERMUX_PKG_REVISION=3
+TERMUX_PKG_REVISION=4
 TERMUX_PKG_SRCURL=(https://android.googlesource.com/platform/frameworks/base
+				   https://android.googlesource.com/platform/external/zlib
                    https://android.googlesource.com/platform/system/core
                    https://android.googlesource.com/platform/system/libbase
                    https://android.googlesource.com/platform/system/libziparchive
@@ -16,6 +17,7 @@ TERMUX_PKG_SRCURL=(https://android.googlesource.com/platform/frameworks/base
                    https://android.googlesource.com/platform/system/tools/aidl)
 TERMUX_PKG_GIT_BRANCH=android-${_TAG_VERSION}_r${_TAG_REVISION}
 TERMUX_PKG_SHA256=(SKIP_CHECKSUM
+                   SKIP_CHECKSUM
                    SKIP_CHECKSUM
                    SKIP_CHECKSUM
                    SKIP_CHECKSUM
@@ -57,7 +59,7 @@ termux_step_post_get_source() {
 }
 
 termux_step_host_build() {
-	_PREFIX_FOR_BUILD=$TERMUX_PKG_HOSTBUILD_DIR/_prefix
+	local _PREFIX_FOR_BUILD=$TERMUX_PKG_HOSTBUILD_DIR/prefix
 
 	# Need bison that understands --header=[FILE] option.
 	local BISON_BUILD_SH=$TERMUX_SCRIPTDIR/packages/bison/build.sh
@@ -74,6 +76,8 @@ termux_step_host_build() {
 }
 
 termux_step_pre_configure() {
+	local _PREFIX_FOR_BUILD=$TERMUX_PKG_HOSTBUILD_DIR/prefix
+	
 	# Certain packages are not safe to build on device because their
 	# build.sh script deletes specific files in $TERMUX_PREFIX.
 	if $TERMUX_ON_DEVICE_BUILD; then
@@ -106,6 +110,7 @@ termux_step_make() {
 	local LIBBASE_SRCDIR=$TERMUX_PKG_SRCDIR/libbase
 	local LIBCUTILS_SRCDIR=$TERMUX_PKG_SRCDIR/core/libcutils
 	local LIBUTILS_SRCDIR=$TERMUX_PKG_SRCDIR/core/libutils
+	local ZLIB_SRCDIR=$TERMUX_PKG_SRCDIR/zlib
 	local INCFS_SUPPORT_INCDIR=$TERMUX_PKG_SRCDIR/libziparchive/incfs_support/include
 	local LIBZIPARCHIVE_SRCDIR=$TERMUX_PKG_SRCDIR/libziparchive
 	local INCFS_UTIL_SRCDIR=$TERMUX_PKG_SRCDIR/incremental_delivery/incfs/util
@@ -149,7 +154,7 @@ termux_step_make() {
 	# Build libziparchive:
 	cd $LIBZIPARCHIVE_SRCDIR
 	for f in $libziparchive_sources; do
-		$CXX $CXXFLAGS -std=c++20 $CPPFLAGS -I$INCFS_SUPPORT_INCDIR $f -c
+		$CXX $CXXFLAGS -std=c++20 $CPPFLAGS -I$INCFS_SUPPORT_INCDIR -I$ZLIB_SRCDIR $f -c
 	done
 	$CXX $CXXFLAGS *.o -shared $LDFLAGS \
 		-landroid-base \

@@ -56,7 +56,7 @@ termux_step_pre_configure() {
 }
 
 termux_step_configure() {
-	local jdk_ldflags="-L${TERMUX_PREFIX}/lib -Wl,-rpath=$TERMUX_PREFIX/opt/openjdk/lib -Wl,-rpath=${TERMUX_PREFIX}/lib -Wl,--enable-new-dtags"
+	local jdk_ldflags="-L${TERMUX_PREFIX}/lib -L$TERMUX_TOPDIR/libjpeg-turbo/build/lib -Wl,-rpath=$TERMUX_PREFIX/opt/openjdk/lib -Wl,-rpath=${TERMUX_PREFIX}/lib -Wl,--enable-new-dtags"
 	bash ./configure \
 		--openjdk-target=$TERMUX_HOST_PLATFORM \
 		--with-extra-cflags="$CFLAGS $CPPFLAGS -DLE_STANDALONE -DANDROID -D__TERMUX__=1" \
