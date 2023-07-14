@@ -23,12 +23,12 @@ jobs:
           - arm
           - i686
           - x86_64
-    if: github.repository == 'termux/termux-packages'
+    if: github.repository == 'agnostic-apollo/termux-packages'
     steps:
       - name: Git clone
         uses: actions/checkout@v3
       - name: Create bootstrap archive
-        run: ./scripts/generate-bootstraps.sh --architectures ${{ matrix.arch }}
+        run: ./scripts/generate-bootstraps.sh --android10 --architectures ${{ matrix.arch }}
       - name: Store artifacts
         uses: actions/upload-artifact@v3
         with:
@@ -69,6 +69,6 @@ jobs:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: "*.zip"
           file_glob: true
-          release_name: "Bootstrap archives for Termux application"
+          release_name: "Bootstrap (android-10) archives for Termux application"
           tag: ${{ steps.get_tag.outputs.tag_name }}
           checksums: sha256,sha512,md5
