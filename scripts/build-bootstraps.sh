@@ -8,7 +8,7 @@
 #                bootstrap archives to be easily built for (forked) termux
 #                apps without having to publish an apt repo first.
 # Usage:         run "build-bootstrap.sh --help"
-version=0.1.0
+version=0.2.0
 
 set -e
 
@@ -27,9 +27,10 @@ BOOTSTRAP_ANDROID10_COMPATIBLE=false
 TERMUX_DEFAULT_ARCHITECTURES=("aarch64" "arm" "i686" "x86_64")
 TERMUX_ARCHITECTURES=("${TERMUX_DEFAULT_ARCHITECTURES[@]}")
 
-TERMUX_PACKAGES_DIRECTORY="/home/builder/termux-packages"
-TERMUX_BUILT_DEBS_DIRECTORY="$TERMUX_PACKAGES_DIRECTORY/output"
+TERMUX_PACKAGES_REPO_ROOT_DIRECTORY="/home/builder/termux-packages"
+TERMUX_BUILT_DEBS_DIRECTORY="$TERMUX_PACKAGES_REPO_ROOT_DIRECTORY/output"
 TERMUX_BUILT_PACKAGES_DIRECTORY="/data/data/.built-packages"
+TERMUX_PACKAGES_DIRECTORIES=$(jq --raw-output 'keys | .[]' "${TERMUX_PACKAGES_REPO_ROOT_DIRECTORY}/repo.json")
 
 IGNORE_BUILD_SCRIPT_NOT_FOUND_ERROR=1
 FORCE_BUILD_PACKAGES=0
@@ -40,6 +41,13 @@ declare -a PACKAGES=()
 # A list of non-essential packages to build.
 # By default it is empty, but can be filled with option '--add'.
 declare -a ADDITIONAL_PACKAGES=()
+
+# By default, build core packages first then additional packages
+# later. Override with option '--build-extra-first'.
+# Helpful in avoiding conflicts when building packages in a
+# certain order. Examples that have build issues:
+# libandroid-glob -> gdb
+BOOTSTRAP_BUILD_ADDITIONAL_PACKAGES_FIRST=false
 
 # A list of already extracted packages
 declare -a EXTRACTED_PACKAGES=()
@@ -58,20 +66,64 @@ done
 
 # Build deb files for package and its dependencies deb from source for arch
 build_package() {
-	
+
 	local return_value
 
 	local package_arch="$1"
-	local package_name="$2"
+	local packages_dir="$2"
+	local package_name="$3"
 
 	local build_output
+	local package_dir
+	local packages_dir
+	local subpackage_name
+	local subpackage_file
+	local is_subpackage
+
+	local build_package_options=("${BUILD_PACKAGE_OPTIONS[@]}")
 
 	# Build package from source
 	# stderr will be redirected to stdout and both will be captured into variable and printed on screen
-	cd "$TERMUX_PACKAGES_DIRECTORY"
+	cd "$TERMUX_PACKAGES_REPO_ROOT_DIRECTORY"
 	echo $'\n\n\n'"[*] Building '$package_name'..."
+
+	# Search for parent package.
+	if [ -f "$TERMUX_PACKAGES_REPO_ROOT_DIRECTORY/$packages_dir/$package_name/build.sh" ]; then
+		is_subpackage="false"
+		#build_package_options+=("--no-build-unneeded-subpackages")
+		echo $'\n\n\n'"[*] Building package '$package_name'..."
+
+	# Search for virtual static subpackage.
+	elif [[ "$package_name" == *"-static" ]] && [ -f "$TERMUX_PACKAGES_REPO_ROOT_DIRECTORY/$packages_dir/${package_name%-static}/build.sh" ]; then
+		is_subpackage="true"
+		subpackage_name="$package_name"
+		package_name="${package_name%-static}"
+		echo $'\n\n\n'"[*] Building package '$package_name' for subpackage '$subpackage_name'..."
+
+	else
+		# Search for predefined subpackage.
+		subpackage_file="$(find "$packages_dir" -mindepth 2 -maxdepth 2 -type f -name "$package_name.subpackage.sh")"
+		if [ -n "$subpackage_file" ]; then
+			if [ "$(echo "$subpackage_file" | wc -l)" -gt 1 ]; then
+				echo "More than one build file found for subpackage '$package_name'" 1>&2
+				return 1
+			fi
+
+			is_subpackage="true"
+			package_dir="$(dirname "$subpackage_file")"
+			subpackage_name="$package_name"
+			package_name="$(basename "$package_dir")"
+			echo $'\n\n\n'"[*] Building package '$package_name' for subpackage '$subpackage_name'..."
+		fi
+	fi
+
+	if [ "$is_subpackage" != "true" ] && [ "$is_subpackage" != "false" ]; then
+		echo "Build file not found for package '$package_name'" 1>&2
+		return 1
+	fi
+
 	exec 99>&1
-	build_output="$("$TERMUX_PACKAGES_DIRECTORY"/build-package.sh "${BUILD_PACKAGE_OPTIONS[@]}" -a "$package_arch" "$package_name" 2>&1 | tee >(cat - >&99); exit ${PIPESTATUS[0]})";
+	build_output="$("$TERMUX_PACKAGES_REPO_ROOT_DIRECTORY"/build-package.sh "${build_package_options[@]}" -a "$package_arch" "$package_name" 2>&1 | tee >(cat - >&99); exit ${PIPESTATUS[0]})";
 	return_value=$?
 	echo "[*] Building '$package_name' exited with exit code $return_value"
 	exec 99>&-
@@ -81,7 +133,7 @@ build_package() {
 		# Dependency packages may not have a build.sh, so we ignore the error.
 		# A better way should be implemented to validate if its actually a dependency
 		# and not a required package itself, by removing dependencies from PACKAGES array.
-		if [[ $IGNORE_BUILD_SCRIPT_NOT_FOUND_ERROR == "1" ]] && [[ "$build_output" == *"No build.sh script at package dir"* ]]; then
+		if [[ $IGNORE_BUILD_SCRIPT_NOT_FOUND_ERROR == "1" ]] && { [[ "$build_output" == *"No build.sh script at package dir"* ]] || [[ "$build_output" == *"No package $package_name found in any of the enabled repositories. Are you trying to set up a custom repository?"* ]]; }; then
 			echo "Ignoring error 'No build.sh script at package dir'" 1>&2
 			return 0
 		fi
@@ -94,6 +146,7 @@ build_package() {
 # Extract *.deb files to the bootstrap root.
 extract_debs() {
 
+	local package_arch="$1"
 	local current_package_name
 	local data_archive
 	local control_archive
@@ -113,7 +166,7 @@ extract_debs() {
 		echo "\""
 	fi
 
-	for deb in *.deb; do
+	while IFS= read -r -d '' deb; do
 
 		current_package_name="$(echo "$deb" | sed -E 's/^([^_]+).*/\1/' )"
 		echo "current_package_name: '$current_package_name'"
@@ -185,7 +238,9 @@ extract_debs() {
 				done
 			fi
 		)
-	done
+
+	# Only extract debs for $package_arch and all
+	done < <(find . -maxdepth 1 -type f \( -name "*_$package_arch.deb" -o -name "*_all.deb" \) -print0 | sort -nz)
 
 }
 
@@ -206,7 +261,7 @@ create_bootstrap_archive() {
 		zip -r9 "${BOOTSTRAP_TMPDIR}/bootstrap-${1}.zip" ./*
 	)
 
-	mv -f "${BOOTSTRAP_TMPDIR}/bootstrap-${1}.zip" "$TERMUX_PACKAGES_DIRECTORY/"
+	mv -f "${BOOTSTRAP_TMPDIR}/bootstrap-${1}.zip" "$TERMUX_PACKAGES_REPO_ROOT_DIRECTORY/"
 
 	echo "[*] Finished successfully (${1})."
 
@@ -225,6 +280,13 @@ set_build_bootstrap_traps() {
 
 }
 
+
+build_bootstrap_killtree() {
+    local signal="$1"; local pid="$2"; local cpid
+    for cpid in $(pgrep -P "$pid"); do build_bootstrap_killtree "$signal" "$cpid"; done
+    [[ "$pid" != "$$" ]] && signal="${signal:=15}"; kill "-$signal" "$pid" 2>/dev/null
+}
+
 build_bootstrap_trap() {
 
 	local build_bootstrap_trap_exit_code=$?
@@ -233,7 +295,9 @@ build_bootstrap_trap() {
 	[ -h "$TERMUX_BUILT_PACKAGES_DIRECTORY" ] && rm -f "$TERMUX_BUILT_PACKAGES_DIRECTORY"
 	[ -d "$BOOTSTRAP_TMPDIR" ] && rm -rf "$BOOTSTRAP_TMPDIR"
 
-	[ -n "$1" ] && trap - "$1"; exit $build_bootstrap_trap_exit_code
+	[ -n "$1" ] && trap - "$1";
+	build_bootstrap_killtree "$1" $$;
+	exit $build_bootstrap_trap_exit_code
 
 }
 
@@ -265,6 +329,10 @@ Available command_options:
                      Override default list of architectures for which bootstrap
                      archives will be created. Multiple architectures should be
                      passed as comma-separated list.
+  [ --build-extra-first ]
+                     Build the specified additional packages first rather than
+                     the core packages. May avoid build conflicts for some
+                     packages when building in certain order.
 
 
 The package name/prefix that the bootstrap is built for is defined by
@@ -330,6 +398,9 @@ main() {
 					return 1
 				fi
 				;;
+			--build-extra-first)
+				BOOTSTRAP_BUILD_ADDITIONAL_PACKAGES_FIRST=true
+				;;
 			-f)
 				BUILD_PACKAGE_OPTIONS+=("-f")
 				FORCE_BUILD_PACKAGES=1
@@ -368,12 +439,18 @@ main() {
 
 		ln -sf "$TERMUX_BUILT_PACKAGES_DIRECTORY_FOR_ARCH" "$TERMUX_BUILT_PACKAGES_DIRECTORY"
 
-		if [[ $FORCE_BUILD_PACKAGES == "1" ]]; then
+		# Always delete TERMUX_BUILT_DEBS_DIRECTORY before building for an
+		# arch since, if the output directory already had debs that weren't
+		# supposed to be part of the default packages, they would also get
+		# included. Secondly, if the multiple versions of the same package
+		# existed, only one would get extracted, which may not even be the
+		# required one. Getting the names of the package and their
+		# dependencies built and their versions or deb names will be too much
+		# work and may have issues.
+		#if [[ $FORCE_BUILD_PACKAGES == "1" ]]; then
 			rm -f "$TERMUX_BUILT_PACKAGES_DIRECTORY_FOR_ARCH"/*
 			rm -f "$TERMUX_BUILT_DEBS_DIRECTORY"/*
-		fi
-
-
+		#fi
 
 		BOOTSTRAP_ROOTFS="$BOOTSTRAP_TMPDIR/rootfs-${package_arch}"
 		BOOTSTRAP_PKGDIR="$BOOTSTRAP_TMPDIR/packages-${package_arch}"
@@ -439,23 +516,34 @@ main() {
 		PACKAGES+=("patch")
 		PACKAGES+=("unzip")
 
-		# Handle additional packages.
-		for add_pkg in "${ADDITIONAL_PACKAGES[@]}"; do
-			if [[ " ${PACKAGES[*]} " != *" $add_pkg "* ]]; then
-				PACKAGES+=("$add_pkg")
-			fi
-		done
-		unset add_pkg
+		if ! ${BOOTSTRAP_BUILD_ADDITIONAL_PACKAGES_FIRST}; then
+			# Handle additional packages.
+			for add_pkg in "${ADDITIONAL_PACKAGES[@]}"; do
+				if [[ " ${PACKAGES[*]} " != *" $add_pkg "* ]]; then
+					PACKAGES+=("$add_pkg")
+				fi
+			done
+			unset add_pkg
+		else
+			# This is pretty much the reverse. Dont think too hard.
+			for core_pkg in "${PACKAGES[@]}"; do
+				if [[ " ${ADDITIONAL_PACKAGES[*]} " != *" $core_pkg "* ]]; then
+					ADDITIONAL_PACKAGES+=("$core_pkg")
+				fi
+			done
+			unset core_pkg
+			PACKAGES=("${ADDITIONAL_PACKAGES[@]}")
+		fi
 
 		# Build packages.
 		for package_name in "${PACKAGES[@]}"; do
 			set +e
-			build_package "$package_arch" "$package_name" || return $?
+			build_package "$package_arch" packages "$package_name" || return $?
 			set -e
 		done
 
 		# Extract all debs.
-		extract_debs || return $?
+		extract_debs "$package_arch" || return $?
 
 		# Create bootstrap archive.
 		create_bootstrap_archive "$package_arch" || return $?

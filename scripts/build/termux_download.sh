@@ -18,7 +18,7 @@ termux_download() {
 	local TMPFILE
 	TMPFILE=$(mktemp "$TERMUX_PKG_TMPDIR/download.${TERMUX_PKG_NAME-unnamed}.XXXXXXXXX")
 	echo "Downloading ${URL}"
-	if curl --fail --retry 20 --retry-connrefused --retry-delay 30 --location --output "$TMPFILE" "$URL"; then
+	if curl --header 'Expect:' --fail --retry 20 --retry-connrefused --retry-delay 30 --keepalive-time 2 --location --output "$TMPFILE" "$URL"; then
 		local ACTUAL_CHECKSUM
 		ACTUAL_CHECKSUM=$(sha256sum "$TMPFILE" | cut -f 1 -d ' ')
 		if [ "$CHECKSUM" != "SKIP_CHECKSUM" ]; then
